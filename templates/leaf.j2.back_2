@@ -1,0 +1,129 @@
+#{# This is the leaf template #}
+#{# This is for EVPN #}
+
+service routing protocols model multi-agent
+
+#{% for item in underlay[inventory_hostname]['interfaces'] %}
+#interface {{ item }}
+#   ip address {{ underlay[inventory_hostname]['interfaces'][item]['ipv4']}}/{{ underlay[inventory_hostname]['interfaces'][item]['mask']}}
+#   {% if 'Ethernet' in item %}
+#   no switchport
+#   mtu {{ underlay['global']['MTU'] }}
+#{% endif %}
+#{% endfor %}
+
+#{# This section is static, no need to modify#}
+
+ip prefix-list LOOPBACK
+    seq 10 permit 10.1.0.0/24 eq 32
+    seq 20 permit 10.1.1.0/24 eq 32
+    seq 30 permit 10.2.0.0/24 eq 32
+    seq 40 permit 10.2.1.0/24 eq 32
+
+route-map LOOPBACK permit 10
+   match ip address prefix-list LOOPBACK
+
+#{# Pull the ASN and router-id from the underlay.yml file #}
+
+router bgp {{ underlay[inventory_hostname]['BGP']['ASN'] }}
+   router-id {{ underlay[inventory_hostname]['interfaces']['loopback0']['ipv4']}}
+
+#router bgp {# Put ASN here via the underlay.yml file #}
+#   router-id {# put loopback0 address here from the underlay.yml file #}
+   no bgp default ipv4-unicast
+   maximum-paths 3
+   distance bgp 20 200 200
+
+#{# This is the connection to the spines#}
+
+   neighbor SPINE_Underlay peer group  
+#   neighbor SPINE_Underlay remote-as {# The ASN of the spines from the underlay.yml file #}
+
+   neighbor Underlay remote-as {{ underlay[inventory_hostname]['BGP']['spine-ASN'] }}
+   neighbor SPINE_Underlay send-community
+   neighbor SPINE_Underlay maximum-routes 12000
+
+{# This is the connection to the leaf peer #}
+
+   neighbor LEAF_Peer peer group
+#   neighbor LEAF_Peer remote-as {# The ASN of the other leaf in the MLAG pair #}}
+
+   neighbor LEAF_Peer remote-as {{ underlay[inventory_hostname]['BGP']['ASN'] }}i
+   neighbor LEAF_Peer next-hop-self
+   neighbor LEAF_Peer maximum-routes 12000
+
+
+{% for peer in underlay[inventory_hostname]['BGP']['spine-peers'] %}
+   neighbor {{ peer }} peer group Underlay
+{% endfor %}   
+{% if underlay[inventory_hostname]['MLAG'] == "Odd" %}
+   neighbor 192.168.255.2 peer group LEAF_Peer
+   {% else %}
+   neighbor 192.168.255.1 peer group LEAF_Peer
+{% endif %}
+
+  neighbor EVPN peer group
+  {% if 'DC1' in inventory_hostname %}
+   neighbor EVPN remote-as {{ underlay['global']['DC1']['spine_ASN']}} 
+  {% endif %}  
+  {% if 'DC2' in inventory_hostname %}
+   neighbor EVPN remote-as {{ underlay['global']['DC2']['spine_ASN']}} 
+  {% endif %}  
+
+#{# This must be a loop, preferably a "for" loop, to put the neighbor relationships in #}
+
+ 
+
+#{# This is a conditional (if statements), if the switch is "Odd" the neighbor is 192.168.255.2, if it's even the neighbor is 192.168.255.1 #}
+
+
+   {#   neighbor 192.168.255.2 peer group LEAF_Peer #}
+   {#.  neighbor 192.168.255.1 peer group LEAF_Peer #}
+
+#{# This part is static and you don't need to change #}
+   
+   redistribute connected route-map LOOPBACK
+   address-family ipv4
+     neighbor SPINE_Underlay activate
+     neighbor LEAF_Peer activate
+     redistribute connected route-map LOOPBACK
+
+!vrf
+{% for Tenant in VXLAN['Tenants'] %}
+  vrf instance {{ Tenant }} 
+  ip routing vrf {{ Tenant }}
+{%endfor%}
+
+
+!VLANs
+{% for Tenant in VXLAN['Tenants'] %}
+{%   for L2VNI in VXLAN['Tenants'][Tenant]['L2VNI']%}
+VLAN {{VXLAN['Tenants'][Tenant]['L2VNI'][L2VNI]['VLANID']}}
+{%endfor%}
+{%endfor%}
+
+
+
+{% for Tenant in VXLAN['Tenants'] %}
+{%   for L2VNI in VXLAN['Tenants'][Tenant]['L2VNI']%}
+interface vlan {{VXLAN['Tenants'][Tenant]['L2VNI'][L2VNI]['VLANID']}}
+  vrf {{Tenant}}
+  ip address virtual {{VXLAN['Tenants'][Tenant]['L2VNI'][L2VNI]['SVI']}}
+
+{%endfor%}
+{%endfor%}
+
+
+
+
+interface vxlan1
+  vxlan source-interface Loopback1
+  vxlan udp-port 4789
+{% for Tenant in VXLAN['Tenants'] %}
+  vxlan vrf {{ Tenant }} vni {{ VXLAN['Tenants'][Tenant]['L3VNI']}}
+{%endfor%}
+{% for Tenant in VXLAN['Tenants'] %}
+{%   for L2VNI in VXLAN['Tenants'][Tenant]['L2VNI']%}
+  vxlan vlan {{VXLAN['Tenants'][Tenant]['L2VNI'][L2VNI]['VLANID']}} vni {{VXLAN['Tenants'][Tenant]['L2VNI'][L2VNI]['VNID']}}
+{%endfor%}
+{%endfor%}

@@ -1,0 +1,8 @@
+---
+- hosts: leafs_DC2
+  gather_facts: no
+ 
+  tasks:
+    - name: send show version
+      eos_command:
+        commands: "show version"
